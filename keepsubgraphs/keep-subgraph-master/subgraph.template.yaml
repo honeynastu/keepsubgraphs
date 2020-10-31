@@ -1,0 +1,413 @@
+specVersion: 0.0.2
+description: Keep Network
+repository: https://github.com/honeynastu/keepsubgraphs:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum/contract
+    name: TBTCDepositToken
+    network: {{ network }}
+    source:
+      startBlock: {{ TBTCDepositToken.startBlock }}
+      address: "{{ TBTCDepositToken.address }}"
+      abi: TBTCDepositToken
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - TBTCDepositToken
+      abis:
+        - name: TBTCDepositToken
+          file: ./abis/TBTCDepositToken.json
+      file: ./src/mapping.ts
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,indexed uint256)
+          handler: handleMintTBTCDepositToken
+
+
+  - kind: ethereum/contract
+    name: TBTCToken
+    network: {{ network }}
+    source:
+      startBlock: {{ TBTCToken.startBlock }}
+      address: "{{ TBTCToken.address }}"
+      abi: TBTCTokenContract
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - TBTCToken
+      abis:
+        - name: TBTCTokenContract
+          file: ./abis/TBTCToken.json
+      file: ./src/mappingTBTCToken.ts
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleMintTBTCToken
+
+  # Ultimately, this one has "unbonded" value for each operator + the bonded one that belongs to each keep
+  # I believe operators directly bond their ETH.
+  # On the other hand, STAKING is different and is the KEEP being held.
+  - kind: ethereum/contract
+    name: KeepBonding
+    network: {{ network }}
+    source:
+      startBlock: {{ KeepBonding.startBlock }}
+      address: "{{ KeepBonding.address }}"
+      abi: KeepBondingContract
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - BondCreated
+        - BondReassigned
+        - BondReleased
+        - BondSeized
+        - UnbondedValueDeposited
+        - UnbondedValueWithdrawn
+      abis:
+        - name: KeepBondingContract
+          file: ./abis/KeepBonding.json
+      eventHandlers:
+        # When a keep is created, it will create a bond for each operator in the keep.
+        # Thus, the event has to be linked to both the keep & the operator address (keep is the "holder")
+        - event: BondCreated(indexed address,indexed address,indexed address,uint256,uint256)
+          handler: handleBondCreated
+        # Seems unused
+        - event: BondReassigned(indexed address,indexed uint256,address,uint256)
+          handler: handleBondReassigned
+        # When the keep closes
+        - event: BondReleased(indexed address,indexed uint256)
+          handler: handleBondReleased
+        # In the case of fraud, deposit -> keep -> seizeSignerBonds()
+        - event: BondSeized(indexed address,indexed uint256,address,uint256)
+          handler: handleBondSeized
+        # Not sure who calls this and with what funds.
+        - event: UnbondedValueDeposited(indexed address,indexed address,uint256)
+          handler: handleUnbondedValueDeposited
+        # Called via keep.withdraw() - not sure?
+        - event: UnbondedValueWithdrawn(indexed address,indexed address,uint256)
+          handler: handleUnbondedValueWithdrawn
+      file: ./src/mappingKeepBonding.ts
+
+  - kind: ethereum/contract
+    name: TBTCSystem
+    network: {{ network }}
+    source:
+      startBlock: {{ TBTCSystem.startBlock }}
+      address: "{{ TBTCSystem.address }}"
+      abi: TBTCSystem
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - TBTCSystem
+      abis:
+        - name: TBTCSystem
+          file: ./abis/TBTCSystem.json
+        # Needs those as well to be able to create a data source from them / instantiate them?
+        - name: DepositContract
+          file: ./abis/DepositContract.json
+        - name: BondedECDSAKeep
+          file: ./abis/BondedECDSAKeep.json
+      eventHandlers:
+        - event: Created(indexed address,indexed address,uint256)
+          handler: handleCreatedEvent
+        - event: SetupFailed(indexed address,uint256)
+          handler: handleSetupFailedEvent
+        - event: RegisteredPubkey(indexed address,bytes32,bytes32,uint256)
+          handler: handleRegisteredPubkey
+        - event: Funded(indexed address,indexed bytes32,uint256)
+          handler: handleFundedEvent
+        - event: StartedLiquidation(indexed address,bool,uint256)
+          handler: handleStartedLiquidationEvent
+        - event: CourtesyCalled(indexed address,uint256)
+          handler: handleCourtesyCalledEvent
+        - event: Liquidated(indexed address,uint256)
+          handler: handleLiquidatedEvent
+        - event: RedemptionRequested(indexed address,indexed address,indexed bytes32,uint256,bytes,uint256,bytes)
+          handler: handleRedemptionRequestedEvent
+        - event: GotRedemptionSignature(indexed address,indexed bytes32,bytes32,bytes32,uint256)
+          handler: handleGotRedemptionSignatureEvent
+        - event: Redeemed(indexed address,indexed bytes32,uint256)
+          handler: handleRedeemedEvent
+
+        - event: LotSizesUpdateStarted(uint64[],uint256)
+          handler: handleLotSizesUpdateStarted
+        - event: LotSizesUpdated(uint64[])
+          handler: handleLotSizesUpdated
+
+        - event: SignerFeeDivisorUpdateStarted(uint16,uint256)
+          handler: handleSignerFeeDivisorUpdateStarted
+        - event: SignerFeeDivisorUpdated(uint16)
+          handler: handleSignerFeeDivisorUpdated
+
+        - event: CollateralizationThresholdsUpdateStarted(uint16,uint16,uint16,uint256)
+          handler: handleCollateralizationThresholdsUpdateStarted
+        - event: CollateralizationThresholdsUpdated(uint16,uint16,uint16)
+          handler: handleCollateralizationThresholdsUpdated
+
+        - event: EthBtcPriceFeedAdditionStarted(address,uint256)
+          handler: handleEthBtcPriceFeedAdditionStarted
+        - event: EthBtcPriceFeedAdded(address)
+          handler: handleEthBtcPriceFeedAdded
+
+        - event: KeepFactoriesUpdateStarted(address,address,address,uint256)
+          handler: handleKeepFactoriesUpdateStarted
+        - event: KeepFactoriesUpdated(address,address,address)
+          handler: handleKeepFactoriesUpdated
+
+        - event: AllowNewDepositsUpdated(bool)
+          handler: handleAllowNewDepositsUpdated
+
+      file: ./src/mapping.ts
+
+  - kind: ethereum/contract
+    name: StakingContract
+    network: {{ network }}
+    source:
+      startBlock: {{ TokenStaking.startBlock }}
+      address: "{{ TokenStaking.address }}"
+      abi: StakingContract
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - ExpiredLockReleased
+        - LockReleased
+        - OperatorStaked
+        - RecoveredStake
+        - StakeDelegated
+        - StakeLocked
+        - StakeOwnershipTransferred
+        - TokensSeized
+        - TokensSlashed
+        - TopUpCompleted
+        - TopUpInitiated
+        - Undelegated
+      abis:
+        - name: StakingContract
+          file: ./abis/StakingContract.json
+      eventHandlers:
+        - event: ExpiredLockReleased(indexed address,address)
+          handler: handleExpiredLockReleased
+        - event: LockReleased(indexed address,address)
+          handler: handleLockReleased
+        - event: OperatorStaked(indexed address,indexed address,indexed address,uint256)
+          handler: handleOperatorStaked
+        - event: RecoveredStake(address)
+          handler: handleRecoveredStake
+        - event: StakeDelegated(indexed address,indexed address)
+          handler: handleStakeDelegated
+        - event: StakeLocked(indexed address,address,uint256)
+          handler: handleStakeLocked
+        - event: StakeOwnershipTransferred(indexed address,indexed address)
+          handler: handleStakeOwnershipTransferred
+        - event: TokensSeized(indexed address,uint256)
+          handler: handleTokensSeized
+        - event: TokensSlashed(indexed address,uint256)
+          handler: handleTokensSlashed
+        - event: TopUpCompleted(indexed address,uint256)
+          handler: handleTopUpCompleted
+        - event: TopUpInitiated(indexed address,uint256)
+          handler: handleTopUpInitiated
+        - event: Undelegated(indexed address,uint256)
+          handler: handleUndelegated
+      file: ./src/mappingTokenStaking.ts
+
+  - kind: ethereum/contract
+    name: KeepRandomBeaconOperator
+    network: {{ network }}
+    source:
+      startBlock: {{ KeepRandomBeaconOperator.startBlock }}
+      address: "{{ KeepRandomBeaconOperator.address }}"
+      abi: KeepRandomBeaconOperator
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - ExpiredLockReleased
+      abis:
+        - name: KeepRandomBeaconOperator
+          file: ./abis/KeepRandomBeaconOperator.json
+      eventHandlers:
+        - event: DkgResultSubmittedEvent(uint256,bytes,bytes)
+          handler: handleDkgResultSubmittedEvent
+        - event: RelayEntryRequested(bytes,bytes)
+          handler: handleRelayEntryRequested
+        - event: RelayEntrySubmitted()
+          handler: handleRelayEntrySubmitted
+        - event: GroupSelectionStarted(uint256)
+          handler: handleGroupSelectionStarted
+      file: ./src/mappingKeepRandomBeaconOperator.ts
+
+  - kind: ethereum/contract
+    name: KeepRandomBeaconService
+    network: {{ network }}
+    source:
+      startBlock: {{ KeepRandomBeaconService.startBlock }}
+      address: "{{ KeepRandomBeaconService.address }}"
+      abi: KeepRandomBeaconServiceImplV1
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - ExpiredLockReleased
+      abis:
+        - name: KeepRandomBeaconServiceImplV1
+          file: ./abis/KeepRandomBeaconServiceImplV1.json
+      eventHandlers:
+        - event: RelayEntryGenerated(uint256,uint256)
+          handler: handleRelayEntryGenerated
+        - event: RelayEntryRequested(uint256)
+          handler: handleRelayEntryRequested
+      file: ./src/mappingKeepRandomBeaconService.ts
+
+{% if MedianETHBTC %}
+  - kind: ethereum/contract
+    name: MedianETHBTC
+    network: mainnet
+    source:
+      address: "{{ MedianETHBTC.address }}"
+      abi: MedianETHBTC
+      startBlock: {{ MedianETHBTC.startBlock }}
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - PriceFeed
+      abis:
+        - name: MedianETHBTC
+          file: ./abis/MedianETHBTC.json
+      eventHandlers:
+        - event: LogMedianPrice(uint256,uint256)
+          handler: handleLogMedianPrice
+      file: ./src/mappingPriceFeed.ts
+{% endif %}
+
+  - kind: ethereum/contract
+    name: TokenGrant
+    network: {{ network }}
+    source:
+      startBlock: {{ TokenGrant.startBlock }}
+      address: "{{ TokenGrant.address }}"
+      abi: TokenGrant
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      entities:
+        - StakingContractAuthorized
+        - TokenGrantCreated
+        - TokenGrantRevoked
+        - TokenGrantStaked
+        - TokenGrantWithdrawn
+      abis:
+        - name: TokenGrant
+          file: ./abis/TokenGrant.json
+      eventHandlers:
+        - event: StakingContractAuthorized(indexed address,address)
+          handler: handleStakingContractAuthorized
+        - event: TokenGrantCreated(uint256)
+          handler: handleTokenGrantCreated
+        - event: TokenGrantRevoked(uint256)
+          handler: handleTokenGrantRevoked
+        - event: TokenGrantStaked(indexed uint256,uint256,address)
+          handler: handleTokenGrantStaked
+        - event: TokenGrantWithdrawn(indexed uint256,uint256)
+          handler: handleTokenGrantWithdrawn
+      file: ./src/mappingTokenGrant.ts      
+
+templates:
+  - name: DepositContract
+    kind: ethereum/contract
+    network: {{ network }}
+    source:
+      abi: DepositContract
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      file: ./src/mappingDeposit.ts
+      entities:
+        - DepositContract
+      abis:
+        - name: DepositContract
+          file: ./abis/DepositContract.json
+      callHandlers:
+        - function: notifyFundingTimedOut()
+          handler: handleNotifyFundingTimedOut
+        - function: notifySignerSetupFailed()
+          handler: handleNotifySignerSetupFailed
+        - function: provideFundingECDSAFraudProof(uint8,bytes32,bytes32,bytes32,bytes)
+          handler: handleProvideFundingECDSAFraudProof
+
+        - function: provideECDSAFraudProof(uint8,bytes32,bytes32,bytes32,bytes)
+          handler: handleProvideECDSAFraudProof
+        - function: notifyUndercollateralizedLiquidation()
+          handler: handleNotifyUndercollateralizedLiquidation
+        - function: notifyRedemptionSignatureTimedOut()
+          handler: handleNotifyRedemptionSignatureTimedOut
+        - function: notifyRedemptionProofTimedOut()
+          handler: handleNotifyRedemptionProofTimedOut
+    #  - <default>()
+    #  - exitCourtesyCall()
+    #  - increaseRedemptionFee(bytes8,bytes8)
+    #  - initialize(address)
+    #  - initializeDeposit(address,address,address,address,address,uint64)
+    #  - notifyCourtesyCall()
+    #  - notifyCourtesyCallExpired()
+    #  - notifyFundingTimedOut()
+    #  - notifyRedemptionProofTimedOut()
+    #  - notifyRedemptionSignatureTimedOut()
+    #  - notifySignerSetupFailed()
+    #  - notifyUndercollateralizedLiquidation()
+    #  - provideBTCFundingProof(bytes4,bytes,bytes,bytes4,uint8,bytes,uint256,bytes)
+    #  - provideECDSAFraudProof(uint8,bytes32,bytes32,bytes32,bytes)
+    #  - provideFundingECDSAFraudProof(uint8,bytes32,bytes32,bytes32,bytes)
+    #  - provideRedemptionProof(bytes4,bytes,bytes,bytes4,bytes,uint256,bytes)
+    #  - provideRedemptionSignature(uint8,bytes32,bytes32)
+    #  - purchaseSignerBondsAtAuction()
+    #  - requestFunderAbort(bytes)
+    #  - requestRedemption(bytes8,bytes)
+    #  - retrieveSignerPubkey()
+    #  - transferAndRequestRedemption(bytes8,bytes,address)
+    #  - withdrawFunds()
+
+  - name: BondedECDSAKeep
+    kind: ethereum/contract
+    network: {{ network }}
+    source:
+      abi: BondedECDSAKeep
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.4
+      language: wasm/assemblyscript
+      file: ./src/mappingBondedECDSAKeep.ts
+      entities:
+        - BondedECDSAKeep
+      abis:
+        - name: BondedECDSAKeep
+          file: ./abis/BondedECDSAKeep.json
+      eventHandlers:
+        # KeepContract.submitPublicKey() x3 => emits PublicKeyPublished
+        - event: PublicKeyPublished(bytes)
+          handler: handlePublicKeyPublished
+        - event: KeepClosed()
+          handler: handleKeepClosed
+        - event: KeepTerminated()
+          handler: handleKeepTerminated
+        - event: ERC20RewardDistributed(indexed address,uint256)
+          handler: handleERC20RewardDistributed
+        - event: ETHRewardDistributed(uint256)
+          handler: handleETHRewardDistributed
+      callHandlers:
+        - function: submitPublicKey(bytes)
+          handler: handleSubmitPublicKey
