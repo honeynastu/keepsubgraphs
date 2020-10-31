@@ -1,6 +1,6 @@
 specVersion: 0.0.2
 description: Keep Network
-repository: https://github.com/honeynastu/keepsubgraphs:
+repository: https://github.com/honeynastu/keepsubgraphs/keep-subgraph-master:
   file: ./schema.graphql
 dataSources:
   - kind: ethereum/contract
