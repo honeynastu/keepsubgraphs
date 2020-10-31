@@ -1,0 +1,681 @@
+type TBTCDepositToken @entity {
+  id: ID!
+  deposit: Deposit
+  tokenID: BigInt!
+  owner: Bytes!
+  mintedAt: BigInt!
+  minter: Bytes!
+}
+
+"""
+A one-month interval in the stakedrop reward program.
+
+The intervals of the Beacon and ECDSA reward programs are not the same (there is about a 14 day difference).
+However, the number of intervals are the same, and the programs are otherwise aligned conceptually, so there
+is only one entity representing the intervals for both reward programs.
+"""
+type StakedropInterval @entity {
+  id: ID!
+
+  "Nunber of the interval, with the first interval being 1."
+  number: Int!
+
+  ecdsaIntervalStart: BigInt!
+  ecdsaIntervalEnd: BigInt!
+  beaconIntervalStart: BigInt!
+  beaconIntervalEnd: BigInt!
+
+  keepCount: Int!
+  beaconGroupCount: Int!
+
+  allocationBeacon: BigInt
+  allocationECDSA: BigInt
+
+  """Keeps that fall into this interval, and are counted towards the allocated rewards. This includes terminated
+  keeps which are non-the-less not eligable for an reward.
+  """
+  keeps: [BondedECDSAKeep!] @derivedFrom(field: "stakedropInterval")
+}
+
+# A generic event log entry
+interface Event {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+
+  # Set if this affects a deposit
+  deposit: Deposit
+}
+
+type CreatedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+}
+
+type FundedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  tx: Bytes!
+}
+
+type RegisteredPubKeyEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  signingGroupPubkeyX: Bytes!
+  signingGroupPubkeyY: Bytes!
+}
+
+type RedeemedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  tx: Bytes!
+}
+
+type GotRedemptionSignatureEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+}
+
+type RedemptionRequestedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  redeemerOutputScript: Bytes!
+  requestedFee: BigInt!
+  utxoValue: BigInt!
+  utxoOutpoint: Bytes!
+  redeemer: Bytes!
+  sigHashDigest: Bytes!
+}
+
+
+"""If a Bitcoin fee increase is requested during the withdrawal process.
+"""
+type RedemptionFeeIncreasedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  redeemerOutputScript: Bytes!
+  requestedFee: BigInt!
+  utxoValue: BigInt!
+  utxoOutpoint: Bytes!
+  redeemer: Bytes!
+  sigHashDigest: Bytes!
+}
+
+enum SetupFailedReason {
+  # Both of those cases are handled the same in the contract, but we want to differentiate
+  # between one of the signers failing to publish a key (PublicKeyPublished is never raised)
+  # and the depositor simply abandoning the process and not "picking up the key" (calling
+  # `retrieveSignerPubkey()`) - which is really more comparible with the depositor failing
+  # to fund the deposit.
+  SIGNER_SETUP_FAILED,
+  SIGNER_SETUP_FAILED_DEPOSITOR,
+
+  FUNDING_TIMEOUT,
+  FUNDING_ECDSA_FRAUD
+}
+
+type SetupFailedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  "The reason for the failure, based on which contract call caused the failure state to be entered."
+  reason: SetupFailedReason
+}
+
+type LiquidatedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+}
+
+type CourtesyCalledEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+}
+
+type StartedLiquidationEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  "The cause of this deposit going into liquidation"
+  cause: LiquidationCause
+}
+
+# from https://github.com/keep-network/tbtc/blob/master/solidity/contracts/deposit/DepositUtils.sol
+type Deposit @entity {
+  id: ID!
+
+  "An incrementing unique number for this deposit, starting at 1."
+  index: Int!
+
+  tbtcSystem: Bytes! # address of the system contract
+  contractAddress: Bytes!
+  tdtToken: TBTCDepositToken!
+  currentState: DepositState
+
+  "Timestamp of when this deposit was created."
+  createdAt: BigInt!
+  "Timestamp of when this deposit was closed, either due to redemption, liquidation, or setup failure."
+  closedAt: BigInt
+  "Timestamp of the last state change of this deposit. Initialized to the same value as createdAt."
+  updatedAt: BigInt!
+  "Timestamp of when the deposit redemption was requested, if any. This includes the start of liquidation due to undercollateralization. It is not reset if liquidation starts due to withdrawal failure. It does not reset in case of a fee increase."
+  redemptionStartedAt: BigInt
+  "Start point of the internal timer which begins with a redemption request. It is initially the same as `redemptionStartedAt` in case of manual redemption, but is reset if there is a fee increase. It is not set or reset when we enter liquidation."
+  withdrawalRequestTimerStart: BigInt
+
+  "The timeout after which the current state can be notified, if any. This does not include non-timeout actions that are time-locked, such as courtesy calls or liquidation auctions."
+  currentStateTimesOutAt: BigInt
+
+  # owner is the owner of the TDT token, will match tdtToken.owner (shortcut). we have this mostly because
+  # it makes our code easier!
+  owner: Bytes!
+  # simililary, our code becomes easier if we denorm this here.
+  failureReason: SetupFailedReason,
+
+  "The address which created the deposit initially. In contrast to the owner, this cannot change."
+  creator: Bytes!
+
+  "The address which initiated the last action - initially the creator, then the redeemer."
+  lastActor: Bytes!
+
+  keepAddress: Bytes
+  lotSizeSatoshis: BigInt!
+  initialCollateralizedPercent: Int
+  undercollateralizedThresholdPercent: Int
+  severelyUndercollateralizedThresholdPercent: Int
+  signerFee: BigInt
+  utxoSize: BigInt
+  endOfTerm: BigInt
+  bondedECDSAKeep: BondedECDSAKeep
+
+  "The ratio of backing ETH to lot size. This allows you to sort by collateralization-ratio."
+  etcToBtcRatio: BigInt!
+
+  depositLiquidation: DepositLiquidation
+  depositRedemption: DepositRedemption
+  depositSetup: DepositSetup @derivedFrom(field: "deposit")
+
+  # Because TheGraph does not support complex filters (and/or), we pre-calculate some useful ones here.
+
+  "True if the deposit state is LIQUIDATED, LIQUIDATION_IN_PROGRESS, FRAUD_LIQUIDATION_IN_PROGRESS or COURTESY_CALL."
+  filter_liquidationLikeState: Boolean!,
+  "True if the deposit state is either liquidation like, or a signer setup failure."
+  filter_liquidationLikeOrSignerFailureState: Boolean!,
+  filter_activeLikeState: Boolean!,
+  filter_unmintedTDT: Boolean!,
+  # will be the endOfTerm, or, if the deposit is already reeemable before that, will be maxInt. If not redeemable because closed, will be 0
+  filter_redeemableAsOf: BigInt!
+}
+
+enum DepositState {
+  # DOES NOT EXIST YET
+  START
+
+  # FUNDING FLOW
+  AWAITING_SIGNER_SETUP
+  AWAITING_BTC_FUNDING_PROOF
+
+  # FAILED SETUP
+  FAILED_SETUP
+
+  # ACTIVE
+  ACTIVE # includes courtesy call
+  # REDEMPTION FLOW
+  AWAITING_WITHDRAWAL_SIGNATURE
+  AWAITING_WITHDRAWAL_PROOF
+  REDEEMED
+
+  # SIGNER LIQUIDATION FLOW
+  COURTESY_CALL
+  FRAUD_LIQUIDATION_IN_PROGRESS
+  LIQUIDATION_IN_PROGRESS
+  LIQUIDATED
+}
+
+type DepositSetup @entity {
+  id: ID!
+  deposit: Deposit!
+
+  failureReason: SetupFailedReason,
+  fundingProofTimerStartedAt: BigInt
+}
+
+enum LiquidationCause {
+  FRAUD
+  UNDERCOLLATERIZED,
+  SIGNATURE_TIMEOUT,
+  PROOF_TIMEOUT
+}
+
+type DepositLiquidation @entity {
+  id: ID!
+  deposit: Deposit!
+  initiateTxhash: Bytes
+  courtesyCallTxhash: Bytes
+  liquidationInitiated: BigInt # Timestamp of when liquidation starts
+  courtesyCallInitiated: BigInt # When the courtesy call is issued
+  isLiquidated: Boolean!
+  liquidatedAt: BigInt
+  liquidationInitiator: Bytes
+  cause: LiquidationCause
+}
+
+type DepositRedemption @entity {
+  id: ID!
+  deposit: Deposit!
+  redeemerOutputScript: Bytes # The redeemer output script
+  requestedFee: BigInt # the finitial fee as requested
+  latestRedemptionFee: BigInt # the fee currently required by a redemption transaction
+  withdrawalRequestAt: BigInt # the most recent withdrawal request timestamp
+  redeemedAt: BigInt
+  lastRequestedDigest: Bytes # the digest most recently requested for signing
+  outpoint: Bytes
+  utxoSize: BigInt
+  txid: Bytes
+}
+
+"""
+An actor using the minting and redeeming facilities.
+"""
+type User @entity {
+  id: ID!
+  address: Bytes!
+
+  "The number of deposits the user initiated."
+  numDepositsCreated: Int!
+  "The number of deposits the user initiated, then did not complete the funding process of. Excludes any deposits which failed due to signer issues."
+  numDepositsUnfunded: Int!
+  "The number of deposits the user requested to be redeemed."
+  numDepositsRedeemed: Int!
+  "The number of deposits the user requested to be redeemed, where the deposit was also created by them."
+  numOwnDepositsRedeemed: Int!
+}
+
+"""
+A node operator.
+
+In Staking terms (https://docs.keep.network/random-beacon/staking/), there is an abstract role called the Staker,
+representing owner, operator, beneficiary and authorizer. "Stakers are identified by their operator address", and
+in our graph, through the Operator entity. Understand that in staking terms, only a single owner can delegate
+their tokens to a particular owner, so the tokens staked always come from the samea address.
+"""
+type Operator @entity {
+  id: ID!
+  address: Bytes!
+
+  "When this operator had a stake delegated to them. This is like a createdAt, and the operation also assigns the beneficiary/authorizer roles."
+  stakedAt: BigInt!
+
+  keeps: [BondedECDSAKeep!] @derivedFrom(field: "members")
+  bonds: [Bond!]! @derivedFrom(field: "operator")
+  locks: [Lock!]! @derivedFrom(field: "operator")
+  beaconGroupMemberships: [RandomBeaconGroupMembership!]! @derivedFrom(field: "operator")
+
+  # The other "staker" roles.
+  owner: Bytes
+  beneficiary: Bytes
+  authorizer: Bytes
+
+  # Statistics
+  bonded: BigDecimal!
+  unboundAvailable: BigDecimal!
+  totalKeepCount: Int!
+  activeKeepCount: Int!
+  stakedAmount: BigDecimal!
+
+  "Rewards generated by this operator in TBTC, for any work."
+  totalTBTCRewards: BigInt!
+  "Rewards generated by this operator in ETH, for any work."
+  totalETHRewards: BigInt!
+  "ETH Rewards generated by this operator for random beacon work."
+  totalBeaconRewards: BigInt!
+
+  "How often this operator was involved in a fault, attributable to them."
+  attributableFaultCount: Int!
+  "How often this operator was involved in a fault, attributable to them."
+  involvedInFaultCount: Int!
+  "How often this operator was involved in a fault, either attributable or not."
+  totalFaultCount: Int!
+}
+
+"""
+A lock on an operator stake.
+"""
+type Lock @entity {
+  id: ID!
+  creator: Bytes!
+  operator: Operator!
+  until: BigInt!
+}
+
+enum BondStatus {
+  ACTIVE
+  RELEASED
+  SEIZED
+}
+
+"""Represents a lock on an operators bond, usually held by a keep the operator is collaterializing."""
+type Bond @entity {
+  id: ID!
+  status: BondStatus!
+  referenceID: BigInt!
+  bondedAmount: BigDecimal!
+  operator: Operator!
+  holder: Bytes!
+  keep: BondedECDSAKeep!
+}
+
+type BondedECDSAKeep @entity {
+  id: ID!
+  createdAt: BigInt!
+  keepAddress: Bytes!
+  deposit: Deposit!
+  totalBondAmount: BigInt
+  publicKey: Bytes
+  status: BondedECDSAKeepStatus
+  honestThreshold: Int
+  members: [Operator]!
+
+  "The ratio of backing ETH to lot size. This allows you to sort by collateralization-ratio."
+  etcToBtcRatio: BigInt!
+
+  "Which stakedrop interval this keep belongs to, if any."
+  stakedropInterval: StakedropInterval
+
+  "The nodes which have submitted their pubkey."
+  pubkeySubmissions: [Operator]!
+}
+
+enum BondedECDSAKeepStatus {
+  ACTIVE
+  CLOSED
+  TERMINATED
+}
+
+type GovernanceLogEntry @entity {
+  id: ID!
+  timestamp: BigInt!
+  submitter: Bytes!
+  block: BigInt!
+  transactionHash: String!
+  isRequest: Boolean!
+  change: GovernanceChange
+}
+
+enum GovernanceChangeType {
+  LOT_SIZES,
+  SIGNER_FEE_DIVISOR,
+  KEEP_FACTORIES,
+  COLLATERALIZATION_THRESHOLDS,
+  ETH_BTC_PRICE_FEED_ADDITION
+}
+
+type GovernanceChange @entity {
+  id: ID!
+  type: GovernanceChangeType!
+  requestedAt: BigInt!
+  takesEffectAfter: BigInt!
+  requestBlock: BigInt!
+  requestTransactionHash: String!
+  finalizeBlock: BigInt
+  finalizeTransactionHash: String,
+
+  # A copy of the governance type, but all fields are optional. It might be preferable to use interfaces
+  # and separate subtypes for each log change kind, but this spams the type list of the graph too much,
+  # and we have no ability for any type to be non-root.
+  newLotSizes: [BigInt!]
+  newSignerFeeDivisor: Int,
+  newFactorySelector: Bytes
+  newFullyBackedFactory: Bytes
+  newKeepStakedFactory: Bytes,
+  newPriceFeed: Bytes,
+  newInitialCollateralizedPercent: Int,
+  newSeverelyUndercollateralizedThresholdPercent: Int,
+  newUndercollateralizedThresholdPercent: Int,
+
+  prevLotSizes: [BigInt!]
+  prevSignerFeeDivisor: Int,
+  prevFactorySelector: Bytes
+  prevFullyBackedFactory: Bytes
+  prevKeepStakedFactory: Bytes,
+  prevInitialCollateralizedPercent: Int,
+  prevSeverelyUndercollateralizedThresholdPercent: Int,
+  prevUndercollateralizedThresholdPercent: Int,
+}
+
+
+type Governance @entity {
+  id: ID!
+
+  newDepositsAllowed: Boolean!
+
+  signerFeeDivisor: Int!,
+  pendingSignerFeeDivisorChange: GovernanceChange,
+
+  lotSizes: [BigInt!]!
+  pendingLotSizeChange: GovernanceChange
+
+  factorySelector: Bytes!
+  fullyBackedFactory: Bytes!
+  keepStakedFactory: Bytes!
+  pendingFactoriesChange: GovernanceChange
+
+  priceFeeds: [Bytes!]!
+  pendingPriceFeedAddition: GovernanceChange,
+
+  initialCollateralizedPercent: Int!,
+  severelyUndercollateralizedThresholdPercent: Int!,
+  undercollateralizedThresholdPercent: Int!,
+  pendingCollateralizationThresholdsChange: GovernanceChange,
+}
+
+"""
+Exposes some global system statistics. Only a single record with the id "current" is available.
+"""
+type StatsRecord @entity {
+  id: ID!
+
+  "Total number of deposits ever created, regardless of their current state."
+  depositCount: Int!
+
+  availableToBeBonded: BigDecimal!
+  totalBonded: BigDecimal!
+  totalBondsSeized: BigDecimal!
+
+  "The total amount of BTC currently deposited, measured from funding proof received to redemption proof received."
+  btcUnderDeposit: BigInt!
+  "The total amount of BTC currently deposited, measured from funding proof received to redemption requested"
+  btcInActiveDeposits: BigInt!
+
+  "Total number of grants ever created, regardless of their current state." 
+  totalGrantCount: Int!
+  "Total amount of grants issued."
+  totalGrantIssued: BigInt!
+}
+
+"""
+Exposes some global system status data. Only a single record with the id "current" is available.
+"""
+type StatusRecord @entity {
+  id: ID!
+
+  "The currently requested RandomBeacon relay entry, if any. Only a single request can exist at a time."
+  currentRequestedRelayEntry: RelayEntry
+
+  remainingStakedropBeaconAllocation: BigInt!
+  remainingStakedropECDSAAllocation: BigInt!
+}
+
+type RandomBeaconGroup @entity {
+  id: ID!
+  pubKey: Bytes!
+  createdAt: BigInt!
+
+  # Note: This field cannot use @derivedFrom(). It seems that such fields are not accessible from within AssemblyScript
+  # themselves (crash with an error ala "not an array" + Value.kind=STRING). However, we have to be able to iterate
+  # over group membership records during processing.
+  "A membership record for each unique member in the group."
+  memberships: [RandomBeaconGroupMembership!]!
+
+  "The total number of slots. Since operators may appear multiple times, this is distinct from the unique number count of the group."
+  size: Int!
+  "How many unique operators are in this group - the number of membership records."
+  uniqueMemberCount: Int!
+
+  rewardPerMember: BigInt!
+
+  relayEntries: [RelayEntry!]! @derivedFrom(field: "group")
+}
+
+type RelayEntry @entity {
+  id: ID!
+  requestedAt: BigInt!
+  requestedBy: Bytes!
+  group: RandomBeaconGroup!
+
+  requestId: BigInt
+  value: BigInt
+  generatedAt: BigInt
+  rewardPerMember: BigInt
+}
+
+"""
+Represents the membership of an operator in a beacon group.
+"""
+type RandomBeaconGroupMembership @entity {
+  id: ID!
+  group: RandomBeaconGroup!
+  operator: Operator!
+
+  "The same operator can fill multiple membership slots within a group."
+  count: Int!
+
+  "ETH reward amount (in wei) earned by this operator through membership in this group."
+  reward: BigInt!
+
+  # These are denormalized fields from the group & operator, to allow sorting memberships by these fields.
+  groupCreatedAt: BigInt!
+}
+
+
+type PriceFeed @entity {
+  id: ID!
+  val: BigInt!
+  age: BigInt!
+
+  transactionHash: Bytes!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+}
+
+type Grant @entity {
+  id: ID!
+  grantManager: Bytes!
+  grantee: Bytes!
+  revokedAt: BigInt!
+  revokedAmount: BigInt!
+  revokedWithdrawn: BigInt!
+  revocable: Boolean!
+  amount: BigInt!
+  duration: BigInt!
+  start: BigInt!
+  cliff: BigInt!
+  withdrawn: BigInt!
+  staked: BigInt!
+  stakingPolicy: Bytes!
+  transactionHash: Bytes!
+  timestamp: BigInt
+}
+
+type StakingContractAuthorizedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  grantManager: Bytes!
+  stakingContract: Bytes!
+}
+
+type TokenGrantCreatedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  grantID: BigInt!
+}
+
+type TokenGrantWithdrawnEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  grantID: BigInt!
+  amount: BigInt!
+}
+
+type TokenGrantStakedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  grantID: BigInt!
+  amount: BigInt!
+  operator: Bytes!
+}
+
+type TokenGrantRevokedEvent implements Event @entity {
+  id: ID!
+  submitter: Bytes!
+  transactionHash: String!
+  timestamp: BigInt!
+  deposit: Deposit
+
+  grantID: BigInt!
+}
